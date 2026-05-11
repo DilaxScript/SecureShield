@@ -116,7 +116,6 @@ class CVEScanner:
             "duration_seconds": round((ended_at - started_at).total_seconds(), 3),
             "summary": summary.as_dict(),
             "vulnerabilities": vulnerabilities,
-            "raw": raw_data,
         }
 
     def get_critical_cves(self, image: str) -> list[dict[str, Any]]:

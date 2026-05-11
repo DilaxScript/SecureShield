@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import MagicBento from "./MagicBento";
 import brandLogo from "./assets/brand-logo.png";
 
@@ -60,9 +60,73 @@ const SIDEBAR_GROUPS = [
 const QUICK_IMAGES = ["nginx:latest", "python:3.12-slim", "node:20-bookworm-slim"];
 const FILTER_SEVERITIES = ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"];
 const FILTER_MODULES = ["ALL", "cve", "cis", "runtime", "supply_chain", "secrets"];
+const ISSUE_PAGE_SIZE = 50;
+const ANALYZE_CONFIGS = {
+  vulnerabilities: {
+    title: "Vulnerabilities",
+    description: "Review CVEs from the latest scan in a dedicated page.",
+    tableTitle: "CVEs and image findings",
+    moduleKey: "cve",
+    cardKey: "vuln",
+    issueModules: ["cve", "vulnerability", "vulnerabilities"],
+    showIssues: true,
+    scoreLabel: "Findings",
+    icon: "⛨",
+    actions: ["Prioritize critical and high CVEs", "Open affected image details", "Generate a report for remediation tracking"]
+  },
+  cis: {
+    title: "CIS Benchmark",
+    description: "Inspect compliance controls and failed benchmark checks.",
+    tableTitle: "Benchmark checks",
+    moduleKey: "cis",
+    cardKey: "cis",
+    issueModules: ["cis"],
+    showIssues: false,
+    scoreLabel: "CIS Score",
+    icon: "✓",
+    actions: ["Review failed controls", "Confirm container hardening", "Track compliance drift"]
+  },
+  secrets: {
+    title: "Secrets Detection",
+    description: "Review tokens, keys, credentials, and high-entropy findings.",
+    tableTitle: "Secret findings",
+    moduleKey: "secrets",
+    cardKey: "secrets",
+    issueModules: ["secrets", "secret"],
+    showIssues: true,
+    scoreLabel: "Secrets",
+    icon: "⌘",
+    actions: ["Rotate exposed credentials", "Remove sensitive files from images", "Re-scan after cleanup"]
+  },
+  supply_chain: {
+    title: "Supply Chain",
+    description: "Inspect provenance, mutable tags, and dependency risk checks.",
+    tableTitle: "Supply chain checks",
+    moduleKey: "supply_chain",
+    cardKey: "supply_chain",
+    issueModules: ["supply_chain", "supply-chain"],
+    showIssues: false,
+    scoreLabel: "Health",
+    icon: "◇",
+    actions: ["Pin mutable tags", "Review provenance gaps", "Check startup command risk"]
+  },
+  runtime: {
+    title: "Runtime Security",
+    description: "Review runtime hardening checks and unsafe container settings.",
+    tableTitle: "Runtime checks",
+    moduleKey: "runtime",
+    cardKey: "runtime",
+    issueModules: ["runtime"],
+    showIssues: false,
+    scoreLabel: "Health",
+    icon: "✦",
+    actions: ["Remove privileged flags", "Review host namespace usage", "Harden mounts and networking"]
+  }
+};
 
 export default function App() {
   const [route, setRoute] = useState(readRoute());
+  const [, startRouteTransition] = useTransition();
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth > 1180));
   const [image, setImage] = useState(DEFAULT_IMAGE);
   const [sourcePath, setSourcePath] = useState("");
@@ -621,13 +685,14 @@ export default function App() {
     if (path.startsWith("#")) {
       const nextPath = `/${path}`;
       window.history.pushState({}, "", nextPath);
-      setRoute({ name: "dashboard" });
+      startRouteTransition(() => setRoute({ name: "dashboard" }));
       queueHashScroll(path);
       return;
     }
 
     window.history.pushState({}, "", path);
-    setRoute(readRoute());
+    const nextRoute = readRoute();
+    startRouteTransition(() => setRoute(nextRoute));
     setNotificationsOpen(false);
 
     const hashIndex = path.indexOf("#");
@@ -1799,26 +1864,37 @@ function AnalyzeModulePage({
 }) {
   const config = analyzeConfig(routeName);
   const latestRecord = historyState.records[0];
-  const moduleCards = buildModuleCards(scanResult);
-  const moduleCard = moduleCards.find((item) => item.key === config.cardKey);
-  const moduleIssues = latestIssues.filter((issue) => config.issueModules.includes(String(issue.module || "").toLowerCase()));
-  const moduleChecks = extractModuleRows(scanResult, config.moduleKey);
+  const moduleCards = useMemo(() => buildModuleCards(scanResult), [scanResult]);
+  const moduleCard = useMemo(() => moduleCards.find((item) => item.key === config.cardKey), [config.cardKey, moduleCards]);
+  const moduleIssues = useMemo(
+    () => latestIssues.filter((issue) => config.issueModules.includes(String(issue.module || "").toLowerCase())),
+    [config.issueModules, latestIssues]
+  );
+  const moduleChecks = useMemo(() => extractModuleRows(scanResult, config.moduleKey), [config.moduleKey, scanResult]);
   const summary = scanResult?.summary || zeroSummary();
   const evidenceCount = config.showIssues ? moduleIssues.length : moduleChecks.length;
-  const failingChecks = moduleChecks.filter((row) => statusTone(row.status) === "critical").length;
+  const failingChecks = useMemo(() => moduleChecks.filter((row) => statusTone(row.status) === "critical").length, [moduleChecks]);
   const moduleHealth = moduleCard?.status || (evidenceCount ? "Needs Review" : "Clean");
-  const displayValue = analyzeDisplayValue(routeName, {
-    scanResult,
-    moduleCard,
-    moduleIssues,
-    moduleChecks
-  });
-  const healthScore = analyzeHealthScore(routeName, {
-    scanResult,
-    moduleCard,
-    moduleIssues,
-    moduleChecks
-  });
+  const displayValue = useMemo(
+    () =>
+      analyzeDisplayValue(routeName, {
+        scanResult,
+        moduleCard,
+        moduleIssues,
+        moduleChecks
+      }),
+    [moduleCard, moduleChecks, moduleIssues, routeName, scanResult]
+  );
+  const healthScore = useMemo(
+    () =>
+      analyzeHealthScore(routeName, {
+        scanResult,
+        moduleCard,
+        moduleIssues,
+        moduleChecks
+      }),
+    [moduleCard, moduleChecks, moduleIssues, routeName, scanResult]
+  );
 
   return (
     <div className="page-grid analyze-page">
@@ -2730,52 +2806,93 @@ function HistoryTable({ records, loading, onNavigate }) {
 }
 
 function IssueTable({ issues, onAskAI, onOpenChat, aiLoading = false, chatLoading = false }) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(issues.length / ISSUE_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * ISSUE_PAGE_SIZE;
+  const visibleIssues = useMemo(() => issues.slice(pageStart, pageStart + ISSUE_PAGE_SIZE), [issues, pageStart]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [issues.length]);
+
   if (!issues.length) {
     return <div className="empty-state">No findings available for this view.</div>;
   }
 
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Module</th>
-            <th>Severity</th>
-            <th>ID</th>
-            <th>Title</th>
-            <th>Target</th>
-            <th>AI</th>
-            <th>Chat</th>
-          </tr>
-        </thead>
-        <tbody>
-          {issues.map((issue, index) => (
-            <tr key={`${issue.id}-${issue.module}-${index}`}>
-              <td>
-                <span className="table-chip">{issue.module || "-"}</span>
-              </td>
-              <td>
-                <span className={`badge badge-${String(issue.severity || "unknown").toLowerCase()}`}>
-                  {issue.severity || "UNKNOWN"}
-                </span>
-              </td>
-              <td>{issue.id}</td>
-              <td>{issue.title}</td>
-              <td className="table-target">{issue.target}</td>
-              <td>
-                <AiButton compact onClick={() => onAskAI(issue)} disabled={aiLoading}>
-                  {aiLoading ? "Working..." : "Ask AI"}
-                </AiButton>
-              </td>
-              <td>
-                <AiButton compact onClick={() => onOpenChat(issue)} disabled={chatLoading}>
-                  {chatLoading ? "Opening..." : "AI Chat"}
-                </AiButton>
-              </td>
+    <div className="paginated-table">
+      <div className="table-pagination table-pagination-top">
+        <span>
+          Showing {pageStart + 1}-{Math.min(pageStart + visibleIssues.length, issues.length)} of {issues.length}
+        </span>
+        <div className="pagination-controls">
+          <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1}>
+            Previous
+          </button>
+          <span>
+            Page {currentPage} / {totalPages}
+          </span>
+          <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage === totalPages}>
+            Next
+          </button>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Severity</th>
+              <th>ID</th>
+              <th>Title</th>
+              <th>Target</th>
+              <th>AI</th>
+              <th>Chat</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visibleIssues.map((issue, index) => (
+              <tr key={`${issue.id}-${issue.module}-${pageStart + index}`}>
+                <td>
+                  <span className="table-chip">{issue.module || "-"}</span>
+                </td>
+                <td>
+                  <span className={`badge badge-${String(issue.severity || "unknown").toLowerCase()}`}>
+                    {issue.severity || "UNKNOWN"}
+                  </span>
+                </td>
+                <td>{issue.id}</td>
+                <td>{issue.title}</td>
+                <td className="table-target">{issue.target}</td>
+                <td>
+                  <AiButton compact onClick={() => onAskAI(issue)} disabled={aiLoading}>
+                    {aiLoading ? "Working..." : "Ask AI"}
+                  </AiButton>
+                </td>
+                <td>
+                  <AiButton compact onClick={() => onOpenChat(issue)} disabled={chatLoading}>
+                    {chatLoading ? "Opening..." : "AI Chat"}
+                  </AiButton>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {totalPages > 1 ? (
+        <div className="table-pagination table-pagination-bottom">
+          <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1}>
+            Previous
+          </button>
+          <span>
+            Page {currentPage} / {totalPages}
+          </span>
+          <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage === totalPages}>
+            Next
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3737,70 +3854,7 @@ function analyzeHealthScore(routeName, { scanResult, moduleCard, moduleIssues, m
 }
 
 function analyzeConfig(routeName) {
-  const configs = {
-    vulnerabilities: {
-      title: "Vulnerabilities",
-      description: "Review CVEs from the latest scan in a dedicated page.",
-      tableTitle: "CVEs and image findings",
-      moduleKey: "cve",
-      cardKey: "vuln",
-      issueModules: ["cve", "vulnerability", "vulnerabilities"],
-      showIssues: true,
-      scoreLabel: "Findings",
-      icon: "⛨",
-      actions: ["Prioritize critical and high CVEs", "Open affected image details", "Generate a report for remediation tracking"]
-    },
-    cis: {
-      title: "CIS Benchmark",
-      description: "Inspect compliance controls and failed benchmark checks.",
-      tableTitle: "Benchmark checks",
-      moduleKey: "cis",
-      cardKey: "cis",
-      issueModules: ["cis"],
-      showIssues: false,
-      scoreLabel: "CIS Score",
-      icon: "✓",
-      actions: ["Review failed controls", "Confirm container hardening", "Track compliance drift"]
-    },
-    secrets: {
-      title: "Secrets Detection",
-      description: "Review tokens, keys, credentials, and high-entropy findings.",
-      tableTitle: "Secret findings",
-      moduleKey: "secrets",
-      cardKey: "secrets",
-      issueModules: ["secrets", "secret"],
-      showIssues: true,
-      scoreLabel: "Secrets",
-      icon: "⌘",
-      actions: ["Rotate exposed credentials", "Remove sensitive files from images", "Re-scan after cleanup"]
-    },
-    supply_chain: {
-      title: "Supply Chain",
-      description: "Inspect provenance, mutable tags, and dependency risk checks.",
-      tableTitle: "Supply chain checks",
-      moduleKey: "supply_chain",
-      cardKey: "supply_chain",
-      issueModules: ["supply_chain", "supply-chain"],
-      showIssues: false,
-      scoreLabel: "Health",
-      icon: "◇",
-      actions: ["Pin mutable tags", "Review provenance gaps", "Check startup command risk"]
-    },
-    runtime: {
-      title: "Runtime Security",
-      description: "Review runtime hardening checks and unsafe container settings.",
-      tableTitle: "Runtime checks",
-      moduleKey: "runtime",
-      cardKey: "runtime",
-      issueModules: ["runtime"],
-      showIssues: false,
-      scoreLabel: "Health",
-      icon: "✦",
-      actions: ["Remove privileged flags", "Review host namespace usage", "Harden mounts and networking"]
-    }
-  };
-
-  return configs[routeName] || configs.vulnerabilities;
+  return ANALYZE_CONFIGS[routeName] || ANALYZE_CONFIGS.vulnerabilities;
 }
 
 function extractModuleRows(scanResult, moduleKey) {

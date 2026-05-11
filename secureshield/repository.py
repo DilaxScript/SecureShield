@@ -31,7 +31,7 @@ def save_scan_result(
 ) -> dict[str, Any]:
     init_database()
     with SessionLocal() as session:
-        stored_result = dict(result)
+        stored_result = compact_scan_result(result)
         if owner:
             stored_result["_owner"] = {
                 "id": owner.get("id"),
@@ -319,7 +319,7 @@ def find_latest_scan_record(scan_type: str, target: str, owner_id: int | None = 
         record = session.execute(stmt).scalar_one_or_none()
         if record:
             payload = serialize_scan_record(record)
-            payload["result"] = record.result
+            payload["result"] = compact_scan_result(record.result or {})
             return payload
         return None
 
@@ -354,7 +354,7 @@ def list_scan_history(
             seen_targets.add(key)
             payload = serialize_scan_record(record)
             if include_result:
-                payload["result"] = record.result
+                payload["result"] = compact_scan_result(record.result or {})
             unique_records.append(payload)
             if len(unique_records) >= limit:
                 break
@@ -374,7 +374,7 @@ def get_scan_record(record_id: int, owner_id: int | None = None, *, all_owners: 
         if owner_id is not None and record.owner_user_id != owner_id:
             return None
         payload = serialize_scan_record(record)
-        payload["result"] = record.result
+        payload["result"] = compact_scan_result(record.result or {})
         payload["normalized_counts"] = _normalized_counts(session, record.id)
         return payload
 
@@ -398,6 +398,71 @@ def serialize_scan_record(record: ScanRecord) -> dict[str, Any]:
         "summary": record.summary,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
+
+
+def compact_scan_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Return a browser-friendly scan payload without raw scanner blobs."""
+    compact = {
+        key: value
+        for key, value in (result or {}).items()
+        if key not in {"raw"}
+    }
+
+    modules = compact.get("modules")
+    if isinstance(modules, dict):
+        compact["modules"] = {
+            name: _compact_module_result(payload)
+            for name, payload in modules.items()
+        }
+
+    issues = compact.get("issues")
+    if isinstance(issues, list):
+        compact["issues"] = [_compact_issue(issue) for issue in issues]
+
+    return compact
+
+
+def _compact_module_result(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    compact = {key: value for key, value in payload.items() if key != "raw"}
+    vulnerabilities = compact.get("vulnerabilities")
+    if isinstance(vulnerabilities, list):
+        compact["vulnerabilities"] = [
+            {
+                "cve_id": item.get("cve_id"),
+                "pkg_name": item.get("pkg_name"),
+                "installed_version": item.get("installed_version"),
+                "fixed_version": item.get("fixed_version"),
+                "severity": item.get("severity"),
+                "title": item.get("title"),
+                "primary_url": item.get("primary_url"),
+                "cvss_score": item.get("cvss_score"),
+                "status": item.get("status"),
+                "target": item.get("target"),
+                "target_class": item.get("target_class"),
+                "type": item.get("type"),
+            }
+            for item in vulnerabilities
+            if isinstance(item, dict)
+        ]
+    return compact
+
+
+def _compact_issue(issue: Any) -> Any:
+    if not isinstance(issue, dict):
+        return issue
+
+    compact = {
+        key: value
+        for key, value in issue.items()
+        if key not in {"metadata"}
+    }
+    description = compact.get("description")
+    if isinstance(description, str) and len(description) > 1200:
+        compact["description"] = f"{description[:1200]}..."
+    return compact
 
 
 def serialize_user(user: UserAccount, *, include_secret: bool = False) -> dict[str, Any]:

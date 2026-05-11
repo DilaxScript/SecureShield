@@ -23,6 +23,7 @@ from secureshield.reports import export_report_csv, export_report_json, export_r
 from secureshield.repository import (
     create_scan_job,
     create_user,
+    compact_scan_result,
     find_latest_scan_record,
     get_scan_job,
     get_scan_record,
@@ -204,7 +205,7 @@ async def scan_image(image: str, source_path: str | None = Query(default=None), 
             }
             existing_result["duplicate"] = True
             existing_result["message"] = "This image was already scanned."
-            return existing_result
+            return compact_scan_result(existing_result)
 
         result = SecureShieldScanner().scan(image, source_path=source_path)
         saved = save_scan_result(
@@ -216,7 +217,7 @@ async def scan_image(image: str, source_path: str | None = Query(default=None), 
         )
         result["saved_record"] = saved
         result["duplicate"] = False
-        return result
+        return compact_scan_result(result)
     except ScannerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
@@ -777,7 +778,7 @@ async def scan_progress_socket(websocket: WebSocket) -> None:
                 await websocket.send_json({"event": "error", "detail": f"Unexpected scan error: {exc}"})
                 continue
 
-            await websocket.send_json({"event": "result", "data": result})
+            await websocket.send_json({"event": "result", "data": compact_scan_result(result)})
     except WebSocketDisconnect:
         return
 

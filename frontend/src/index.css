@@ -1363,6 +1363,53 @@ tr:hover td {
   word-break: break-word;
 }
 
+.paginated-table {
+  display: grid;
+  gap: 12px;
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #9fb0c7;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.table-pagination-bottom {
+  justify-content: flex-end;
+}
+
+.pagination-controls,
+.table-pagination-bottom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.table-pagination button {
+  min-height: 34px;
+  border: 1px solid rgba(147, 197, 253, 0.28);
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: rgba(147, 197, 253, 0.08);
+  color: #dbeafe;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.table-pagination button:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.5);
+  background: rgba(147, 197, 253, 0.14);
+}
+
+.table-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .error-box,
 .empty-state {
   border-radius: 18px;
